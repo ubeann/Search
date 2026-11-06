@@ -699,8 +699,12 @@ final class Preferences: ObservableObject {
     @Published var floatingNewTab: Bool {
         didSet { store.set(floatingNewTab, forKey: "newtab.floating") }
     }
-    /// The floating field lists the last few places from History before
-    /// anything is typed (Browser.recentPlaces). Off unless asked for.
+    /// Open tabs and recent places in the new tab: ⌘T's floating field lists
+    /// open tabs to switch to, then the last few places from History, before
+    /// anything is typed, and open tabs that match as you type
+    /// (Browser.fieldSwitches). Off unless asked for. The key is still
+    /// newtab.recent, from when it listed only the places, so a switch
+    /// already on stays on.
     @Published var recentInNewTab: Bool {
         didSet { store.set(recentInNewTab, forKey: "newtab.recent") }
     }

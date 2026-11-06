@@ -421,6 +421,26 @@ final class Browser: NSObject, ObservableObject {
     var active: Tab? { tabs.first { $0.id == activeID } }
     var fieldShowing: Bool { editing || active?.isBlank ?? true }
 
+    /// Where Open tabs and recent places in the new tab (Settings, off
+    /// unless asked for, only with the floating field) lists open tabs to
+    /// switch to and recent places: ⌘T's floating field, and the field of a
+    /// blank tab, which is where ⌘T goes from one. Not the empty half of a
+    /// pair, which lists open tabs of its own, nor ⌘K, the switcher itself.
+    var fieldSwitches: Bool {
+        guard prefs.recentInNewTab, prefs.floatingNewTab, !summoning else { return false }
+        if launching { return true }
+        guard let tab = active, tab.isBlank else { return false }
+        return split(for: tab) == nil
+    }
+
+    /// What a row says at its end. In a field that lists open tabs among
+    /// other rows, an open tab's row says so, and says ↩ Switch once it is
+    /// picked: only then does Return go to it (see submit).
+    func rowNote(_ index: Int) -> (text: String, key: Bool)? {
+        guard fieldSwitches, offers.indices.contains(index), offers[index].tab != nil else { return nil }
+        return picked == index ? ("↩ Switch", true) : ("Open tab", false)
+    }
+
     /// What Return in the field will do, which the field says with its
     /// placeholder and a mark before the words: ⌘T, ⌘L and ⌘K raise one field
     /// that looked the same for all three.
@@ -6220,7 +6240,7 @@ final class Browser: NSObject, ObservableObject {
         }
 
         guard !typed.trimmingCharacters(in: .whitespaces).isEmpty else {
-            offers = launching && prefs.recentInNewTab ? recentPlaces() : []
+            offers = fieldSwitches ? newTabList() : []
             ending = nil
             picked = nil
             siteOffer = nil
@@ -6248,9 +6268,20 @@ final class Browser: NSObject, ObservableObject {
             let shown = Set(open.map(\.url))
             offers = open + offers.filter { $0.tab != nil || !shown.contains($0.url) }
         }
+        if fieldSwitches { offers = withOpenTabs(offers, typed: typed) }
         // A row that was picked stops being the right row the moment the
         // question changes.
         picked = nil
+        // The address of a page already open, typed or pasted whole into
+        // ⌘T's field: Return goes to it rather than opening it twice, and
+        // ⌘Return still opens a copy.
+        // A link to a part of the page (#section) is still offered, but not
+        // picked: switching wouldn't take you to that part.
+        if fieldSwitches, let page = typedPage,
+           Address.url(from: typed.trimmingCharacters(in: .whitespaces))?.fragment == nil,
+           let same = offers.firstIndex(where: { $0.tab != nil && Self.samePage($0.url) == page }) {
+            picked = same
+        }
         askEngine()
     }
 
@@ -6466,8 +6497,15 @@ final class Browser: NSObject, ObservableObject {
         return typed.trimmingCharacters(in: .whitespaces).isEmpty ? "No other tabs open" : "No open tab matches"
     }
 
-    /// ⌘T's floating field before anything is typed, with Recent places in
-    /// the new tab on in Settings (off unless asked for): the last few places
+    /// ⌘T's field before anything is typed, with Open tabs and recent places
+    /// in the new tab on: the open tabs you looked at last, to switch to,
+    /// then the recent places. Nothing is picked, so Return on the empty
+    /// field still opens nothing.
+    private func newTabList() -> [Suggestion] {
+        onePerPage(openPages(matching: "")) + recentPlaces()
+    }
+
+    /// The recent places in ⌘T's field before anything is typed: the last few places
     /// you went that aren't open in this window (⌘K is for those), so the
     /// likeliest new tab is an arrow key away. Only from this Mac's history,
     /// nothing asked of anybody, and nothing from a private tab, which keeps
@@ -6482,19 +6520,94 @@ final class Browser: NSObject, ObservableObject {
             .map { Suggestion(key: $0.address, title: $0.title, url: $0.url, kind: .visited) }
     }
 
+    /// One row a page, the tab looked at last, when a page is open twice.
+    private func onePerPage(_ open: [Suggestion]) -> [Suggestion] {
+        var pages = Set<String>()
+        return open.filter { pages.insert(Self.samePage($0.url)).inserted }
+    }
+
+    /// The open tabs worth the two places in ⌘T's list: the page whose
+    /// address was typed, then one whose title or address begins with what
+    /// was typed (or has a word that does), then the rest. Within each, the
+    /// one looked at last, as ⌘K orders them.
+    private func ranked(_ open: [Suggestion], for typed: String) -> [Suggestion] {
+        let needle = typed.trimmingCharacters(in: .whitespaces).lowercased()
+        let page = typedPage
+        func rank(_ offer: Suggestion) -> Int {
+            if let page, Self.samePage(offer.url) == page { return 0 }
+            let words = (offer.key + " " + offer.title).lowercased()
+                .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            return words.contains(where: { $0.hasPrefix(needle) }) ? 1 : 2
+        }
+        return open.enumerated()
+            .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }
+            .map(\.element)
+    }
+
+    /// Which page an address is, for telling whether one is already open:
+    /// without what only says where a click came from (CleanLink), so a
+    /// link pasted with its utm_ tags is the page open without them.
+    static func samePage(_ url: URL) -> String { History.identity(for: CleanLink.clean(url)) }
+
+    /// What was typed, when it is a whole address (see samePage).
+    private var typedPage: String? {
+        Address.url(from: typed.trimmingCharacters(in: .whitespaces)).map(Self.samePage)
+    }
+
+    /// ⌘T's field with Open tabs and recent places in the new tab on
+    /// (Settings, off unless asked for): up to two open pages that answer to what was typed,
+    /// after any command and before the places, each marked ↩ Switch. They
+    /// take the places' room rather than adding to it, so the list is no
+    /// longer than it was (see placeOffers), and a page both open and visited
+    /// is one row, the open one. Nothing is picked: Return still opens what
+    /// was typed in a new tab, as ⌘T always has, until an arrow key picks a
+    /// tab to switch to.
+    private func withOpenTabs(_ list: [Suggestion], typed: String) -> [Suggestion] {
+        let matching = ranked(onePerPage(openPages(matching: typed)), for: typed)
+        let open = Array(matching.prefix(2))
+        guard !open.isEmpty else { return list }
+        // A place that is open, listed or not, isn't offered to open again:
+        // past the first two, ⌘K has the rest.
+        let opened = Set(matching.map { History.identity(for: $0.url) })
+        func isPlace(_ offer: Suggestion) -> Bool {
+            switch offer.kind {
+            case .visited, .bookmark, .known: return true
+            default: return false
+            }
+        }
+        var room = max(1, 3 - open.count)
+        var rest: [Suggestion] = []
+        for offer in list where !(isPlace(offer) && opened.contains(History.identity(for: offer.url))) {
+            if isPlace(offer) {
+                guard room > 0 else { continue }
+                room -= 1
+            }
+            rest.append(offer)
+        }
+        // A command stays on top: Return runs it (see submit).
+        let commands = rest.prefix(while: { $0.kind.isCommand })
+        return Array(commands) + open + rest.dropFirst(commands.count)
+    }
+
     /// What is open, most recently looked at first, filtered by what has been
     /// typed. On an empty field this is the whole point of the summon: it is
     /// the tab strip, except you read it only when you ask for it.
     private func openPages(matching typed: String) -> [Suggestion] {
         let needle = typed.trimmingCharacters(in: .whitespaces).lowercased()
+        // A whole address pasted in, scheme and tracking tags and all, is
+        // the page it names: the pretty address the rest is matched against
+        // has neither, so it never matched.
+        let page = typedPage
+        func isPage(_ tab: Tab) -> Bool { page != nil && tab.address.map(Self.samePage) == page }
         return tabs
             .filter { $0.id != activeID && !$0.isBlank }
             .filter { tab in
                 guard !needle.isEmpty else { return true }
+                if isPage(tab) { return true }
                 let address = tab.address.map { Address.pretty($0) } ?? ""
                 return tab.label.lowercased().contains(needle) || address.contains(needle)
             }
-            .sorted { $0.touched > $1.touched }
+            .sorted { isPage($0) != isPage($1) ? isPage($0) : $0.touched > $1.touched }
             .prefix(needle.isEmpty ? 6 : 3)
             .compactMap { tab in
                 guard let url = tab.address else { return nil }
@@ -6657,8 +6770,12 @@ final class Browser: NSObject, ObservableObject {
     func submit(aside: Bool = false, front: Bool = false) {
         // Words given to ⌘K over a page go to a new tab (see switcherFallback).
         let fromSwitcher = summoning && active?.isBlank == false
-        // A page already open is switched to, not opened again.
+        // A page already open is switched to, not opened again. In ⌘T's
+        // field ⌘Return and ⇧⌘Return still open a copy, as they do with
+        // every other row there; ⌘K is only for switching.
+        let switchingField = fieldSwitches
         if let picked, offers.indices.contains(picked),
+           !(switchingField && aside),
            let id = offers[picked].tab,
            let tab = tabs.first(where: { $0.id == id }) {
             summoning = false
@@ -6668,9 +6785,14 @@ final class Browser: NSObject, ObservableObject {
                 fill(blank, with: tab)
                 return
             }
+            // A blank tab only there to be typed into (⌘T without the
+            // floating field) isn't left behind empty, as a new tab page
+            // switched away from isn't in Chrome.
+            let left = switchingField ? active.flatMap { $0.isBlank && split(for: $0) == nil ? $0 : nil } : nil
             select(tab)
             editing = false
             typed = ""
+            if let left, tabs.count > 1 { close(left) }
             return
         }
 
