@@ -145,9 +145,13 @@ struct Omnibox: View {
                     .onTapGesture { _ = browser.lockSiteOffer() }
             }
             ForEach(Array(browser.offers.enumerated()), id: \.element.id) { index, offer in
-                Row(offer: offer, picked: browser.picked == index)
+                // In ⌘T's field an open tab is switched to, not opened
+                // again: the one row whose Return isn't the field's own.
+                Row(offer: offer, picked: browser.picked == index, note: browser.rowNote(index))
                     .contentShape(Rectangle())
                     .onTapGesture { browser.take(offer) }
+                    // The list's own inset, between the open tabs and the rest.
+                    .padding(.top, browser.startsGroup(index) ? 6 : 0)
             }
             if let note = browser.switcherNote {
                 Text(note)
@@ -174,6 +178,9 @@ struct Omnibox: View {
         /// Where the arrow keys have walked to. The pointer gets its own,
         /// quieter mark, and changes nothing but the look of the row.
         let picked: Bool
+        /// What the row says at its end (Browser.rowNote): "Switch to tab", or
+        /// "↩ Switch" on a key cap once picked, when Return goes to it.
+        var note: (text: String, key: Bool)? = nil
 
         @State private var hovering = false
 
@@ -225,6 +232,21 @@ struct Omnibox: View {
                         .truncationMode(.tail)
                 }
                 Spacer(minLength: 0)
+                if let note {
+                    Text(note.text)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Palette.muted)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .padding(.horizontal, 6)
+                        .frame(height: 18)
+                        .overlay {
+                            if note.key {
+                                RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(Palette.hairline, lineWidth: 1)
+                            }
+                        }
+                        .accessibilityLabel(note.key ? "Return switches to this tab" : "Switch to tab")
+                }
                 if offer.kind == .bookmark {
                     // Kept by you, not only visited: the bookmark's mark,
                     // at the end now that the site's icon leads the row.

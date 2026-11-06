@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""With Recent places in the new tab on, ⌘T's floating field offers the last
-few places from history before anything is typed, never a page already open
-and never in a private tab, and Return on the empty field still opens nothing
+"""With Open tabs and recent places in the new tab on, ⌘T's floating field
+offers the last few places from history before anything is typed, never a page
+already open and never in a private tab, and Return on the empty field still opens nothing
 until an arrow key picks a row. With it off, as it is unless turned on, the
 field lists nothing.
 
@@ -79,7 +79,8 @@ def main():
         sv.sp("select", id=shy["id"]); time.sleep(0.5)
         cmd_t()
         s = sv.cmd({"do": "suggest"})
-        t.ok("from a private tab: nothing offered", s["offers"] == [], s["offers"])
+        t.ok("from a private tab: no places, only the open tabs to switch to",
+             s["offers"] and all(o[1] == "open" for o in s["offers"]), s["offers"])
     finally:
         t.done()
         sv.finish()
