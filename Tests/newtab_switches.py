@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""With Open tabs in the new tab on, ⌘T lists open tabs to switch to: all of
-them (most recent first) before anything is typed, and up to two that match
+"""With Open tabs and recent places in the new tab on, ⌘T lists open tabs to
+switch to: the last six looked at before anything is typed, then the recent
+places, and up to two that match
 once something is, best match first, in the room of History's places so the
 list is no longer. A row says "Open tab", and "↩ Switch" once picked: Return
 still opens what was typed unless a tab is picked; ↓ then Return switches;
 ⌘Return opens a copy behind. An open page's address typed or pasted whole,
 tracking tags and all, is picked already. The same in a blank tab's own field
-(⌘T without the floating field), whose blank tab goes when it switches away.
-Off, as it ships, the field lists no open tab.
+(where ⌘T goes from a blank tab), whose blank tab goes when it switches away.
+Off, as it ships, or with the floating field off, the field lists no open tab.
 
 Build first (`./build.sh` or `./build.sh debug`), then
 `python3 Tests/newtab_switches.py`. It uses the split suite's harness: started
@@ -88,15 +89,21 @@ def main():
         away()
         sv.quit()
 
-        sv.setup(**{"newtab.floating": True, "newtab.tabs": True, "commandbar": True})
+        sv.setup(**{"newtab.floating": True, "newtab.recent": True, "commandbar": True})
         sv.launch()
         a, b = world()
 
         cmd_t()
         s = state()
-        t.ok("before typing: the open tabs, not the page under the field, nothing picked",
-             s["offers"] and set(kinds(s)) == {"open"} and not any(o[2].endswith("/bravo") for o in s["offers"])
+        k = kinds(s)
+        n = k.count("open")
+        t.ok("before typing: the open tabs first, not the page under the field, nothing picked",
+             n >= 2 and k[:n] == ["open"] * n and not any(o[2].endswith("/bravo") for o in s["offers"])
              and s["picked"] == -1, (s["picked"], s["offers"]))
+        rest = s["offers"][n:]
+        t.ok("…then the recent places, none of them open",
+             rest and all(o[1] == "visited" for o in rest) and not any(o[2].endswith(("/alpha", "/alphabet")) for o in rest),
+             rest)
         count = len(urls())
         bare(36, "\r")
         t.ok("Return on the empty field still opens nothing", len(urls()) == count, urls())
@@ -184,14 +191,25 @@ def main():
         press(40, "k")
         sv.quit()
 
-        # ⌘T without the floating field: a blank tab, whose own field lists them.
-        sv.setup(**{"newtab.tabs": True})
+        # Only with the floating field: off, a blank tab's field lists nothing.
+        sv.setup(**{"newtab.recent": True})
+        sv.launch()
+        world()
+        cmd_t()
+        t.ok("floating field off: the switch does nothing", state()["offers"] == [], state()["offers"])
+        sv.quit()
+
+        # ⌘T from a blank tab goes to its field, which lists them too.
+        sv.setup(**{"newtab.floating": True, "newtab.recent": True})
         sv.launch()
         a, b = world()
         before = urls()
+        sv.sp("newTab"); time.sleep(0.6)
         cmd_t()
         s = state()
-        t.ok("blank tab from ⌘T: its field lists the open tabs", s["offers"] and set(kinds(s)) == {"open"}, s["offers"])
+        k = kinds(s)
+        t.ok("blank tab from ⌘T: its field lists the open tabs, then the recent places",
+             k and k[0] == "open" and set(k) <= {"open", "visited"} and k == sorted(k, key=lambda x: x != "open"), s["offers"])
         typed("alp"); bare(125)
         t.ok("…and as you type, ↩ Switch once picked", state()["notes"][0] == "↩ Switch", state()["notes"])
         bare(36, "\r"); time.sleep(0.8)
@@ -200,6 +218,7 @@ def main():
              "" not in urls() and len(pages) == len([u for u in before if u])
              and front().split("/")[-1].startswith("alp"), (urls(), front()))
         count = len(urls())
+        sv.sp("newTab"); time.sleep(0.6)
         cmd_t(); typed("alp"); bare(125)
         press(36, "\r", ("cmd",)); time.sleep(0.8)
         t.ok("⌘Return from the blank tab: a copy behind, the blank tab still there to type in",
