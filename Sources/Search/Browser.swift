@@ -434,11 +434,19 @@ final class Browser: NSObject, ObservableObject {
     }
 
     /// What a row says at its end. In a field that lists open tabs among
-    /// other rows, an open tab's row says so, and says ↩ Switch once it is
-    /// picked: only then does Return go to it (see submit).
+    /// other rows, an open tab's row says Switch to tab, as a click on it
+    /// does, and ↩ Switch once it is picked: only then does Return go to it
+    /// (see submit).
     func rowNote(_ index: Int) -> (text: String, key: Bool)? {
         guard fieldSwitches, offers.indices.contains(index), offers[index].tab != nil else { return nil }
-        return picked == index ? ("↩ Switch", true) : ("Open tab", false)
+        return picked == index ? ("↩ Switch", true) : ("Switch to tab", false)
+    }
+
+    /// The first row after the open tabs in such a field, set a little apart
+    /// so the tabs to switch to and the places to open read as two groups.
+    func startsGroup(_ index: Int) -> Bool {
+        guard fieldSwitches, index > 0, offers.indices.contains(index) else { return false }
+        return offers[index - 1].tab != nil && offers[index].tab == nil
     }
 
     /// What Return in the field will do, which the field says with its
@@ -2367,6 +2375,10 @@ final class Browser: NSObject, ObservableObject {
     /// The merged window it is one of, with profiles in one window: the
     /// windows of different profiles that take turns in one place.
     var mergeID: UUID?
+    /// Its window closed for good, with others open (see closeAll): it
+    /// writes nothing from here on. A write still waiting (rememberSession)
+    /// found its row empty, and told every other window it had no pins.
+    private(set) var retired = false
     /// Its window is there to be seen — on screen, or behind a hidden app.
     /// Not one tucked behind another profile's.
     var isOpen: Bool { window != nil && !shut && !tucked }
@@ -2863,7 +2875,7 @@ final class Browser: NSObject, ObservableObject {
     }
 
     func writeSession(now: Bool = false) {
-        guard !isPopup else { return }
+        guard !isPopup, !retired else { return }
         // The pins as they are here, for the other windows (see Pins.swift):
         // the space's own, and the ones every space shows (only from a row
         // that holds them: see Pins.sharedToWrite).
@@ -2934,7 +2946,7 @@ final class Browser: NSObject, ObservableObject {
 
     /// Another window changed a space's pins: this window's row there follows.
     func pinsChanged(in space: UUID) {
-        guard !isPopup else { return }
+        guard !isPopup, !retired else { return }
         if space == spaceID {
             // Drawn again even when only a pin's letter or name changed.
             objectWillChange.send()
@@ -3119,6 +3131,67 @@ final class Browser: NSObject, ObservableObject {
         }
         adoptIcons(for: brought, from: source, profile: profile)
         return (made, pins, added)
+    }
+
+    /// Another Chromium browser's open tabs (see ImportSession.swift), from
+    /// the snapshot read when the sheet counted them, into this space: its
+    /// pinned tabs as pins, the rest asleep at the end of the row, a grouped
+    /// tab in the group of that name, made if missing and folded as it was.
+    /// Kept whether or not tab groups are turned on, as takeAsleep keeps
+    /// Arc's folders. Nothing twice: a page already in the row, or a pin
+    /// already there, isn't added again.
+    @discardableResult
+    func takeSession(_ snapshot: SessionImport.Snapshot, from source: ImportSource? = nil, profile: String? = nil)
+        -> (pins: Int, tabs: Int, groups: Int) {
+        let all = snapshot.capped().windows.joined()
+        var brought: [URL] = []
+        var defs = Pins.defs(spaceID)
+        let had = defs
+        for page in all where page.pinned && !had.contains(where: { Browser.samePin($0, page.url) })
+            && !defs.contains(where: { $0.home == page.url.absoluteString }) {
+            let host = page.url.host()?.replacingOccurrences(of: "www.", with: "") ?? ""
+            defs.append(PinDef(id: UUID(), letter: host.first.map { String($0).uppercased() } ?? "•",
+                               home: page.url.absoluteString, title: page.title, name: nil))
+            brought.append(page.url)
+        }
+        let pins = defs.count - had.count
+        if pins > 0 {
+            Pins.set(spaceID, defs, from: self)
+            pinsChanged(in: spaceID)
+        }
+        var seen = Set(tabs.compactMap { ($0.pending ?? $0.address)?.absoluteString })
+        let new = all.filter { !$0.pinned && seen.insert($0.url.absoluteString).inserted }
+        var groups = tabGroups
+        var made: [SessionImport.Token: UUID] = [:]
+        func group(_ token: SessionImport.Token?) -> UUID? {
+            guard let token, let found = snapshot.groups[token] else { return nil }
+            if let id = made[token] { return id }
+            let id = groups.first(where: { $0.name == found.title })?.id ?? {
+                let fresh = TabGroup(id: UUID(), name: found.title, collapsed: found.collapsed)
+                groups.append(fresh)
+                return fresh.id
+            }()
+            made[token] = id
+            return id
+        }
+        tabs += new.map { page in
+            let tab = Tab(configuration: Web.configuration(space: spaceID))
+            prepare(tab)
+            tab.restore(url: page.url, title: page.title)
+            tab.groupID = group(page.group)
+            return tab
+        }
+        let newGroups = groups.count - tabGroups.count
+        if groups != tabGroups {
+            tabGroups = groups
+            arrangeGroupedTabs()
+        }
+        if !new.isEmpty || pins > 0 {
+            writeRow(spaceID, session(tabs, active: activeID, groups: tabGroups, splits: splits), now: true)
+        }
+        brought += new.map(\.url)
+        adoptIcons(for: brought, from: source, profile: profile)
+        return (pins, new.count, newGroups)
     }
 
     /// The icons for what Arc's side of the import brought in, from Arc's own
@@ -3335,6 +3408,7 @@ final class Browser: NSObject, ObservableObject {
 
     /// Its window closed for good, with others open: every page let go.
     func closeAll() {
+        retired = true
         cancelDisplay()
         cancelCapture()
         for questions in heldDialogs.values { questions.forEach { $0.dismiss() } }
@@ -5476,6 +5550,7 @@ final class Browser: NSObject, ObservableObject {
             do {
                 let data = try result.get()
                 try data.write(to: file, options: .atomic)
+                Browser.markDownloaded(file)
                 self?.announce("Saved \(file.lastPathComponent)", file: file)
                 finished?(true)
             } catch {
@@ -5859,9 +5934,9 @@ final class Browser: NSObject, ObservableObject {
         // it is asked, so the picture is of the page before anything moved.
         // Isolating only once the picture is back would be a tenth of a
         // second late, and a muted video, which WebKit stops when nobody can
-        // see it, might no longer be playing. The video's frame in the
-        // picture covers the little window, and the whole of it the tab when
-        // the video lands, each until the page has settled there.
+        // see it, might no longer be playing. The whole of the picture
+        // covers the tab when the video lands, until the page has settled
+        // there.
         //
         // At no more than a million and a bit pixels, the size of the page in
         // points or less: WebKit paints a picture of a page on the processor,
@@ -5877,32 +5952,46 @@ final class Browser: NSObject, ObservableObject {
         picture.snapshotWidth = NSNumber(value: Double(min(shape.width, most) / fine))
         var shot: NSImage??
         var found: Any??
+        var alone: NSImage??
         // Going to another tab, the stage holds on to this page, unseen,
         // until it is in the little window or has nothing to float.
         let stage = tab.web.superview as? StageView
         stage?.keep(tab.web)
-        func both() {
-            guard let shot, let found else { return }
-            lifted(tab, shot: shot, found: found, quietly: quietly, otherwise: otherwise, spaceRequest: spaceRequest)
+        func all() {
+            guard let shot, let found, let alone else { return }
+            lifted(tab, shot: shot, alone: alone, found: found, quietly: quietly, otherwise: otherwise, spaceRequest: spaceRequest)
             stage?.letGo(tab.web)
         }
         tab.web.takeSnapshot(with: picture) { image, _ in
             MainActor.assumeIsolated {
                 shot = .some(image)
-                both()
+                all()
             }
         }
         tab.web.evaluateInSearch(Isolate.on) { answer in
             MainActor.assumeIsolated {
                 found = .some(answer)
-                both()
+                all()
+            }
+        }
+        // And one of the video alone, asked for in the same breath after the
+        // isolation, for the little window's still. Cut from the first, the
+        // still carried whatever the page draws over the video, which the
+        // little window never shows: the player's controls and gradients,
+        // its watermark, captions, a dialog. The window opened on them, and
+        // they vanished as the still came off (#543). Painted with the rest
+        // of the page hidden, this one costs little.
+        tab.web.takeSnapshot(with: picture) { image, _ in
+            MainActor.assumeIsolated {
+                alone = .some(image)
+                all()
             }
         }
     }
 
     /// The page isolated, or not, and pictured as it was before: into the
     /// little window, or on to the other page of a pair.
-    private func lifted(_ tab: Tab, shot: NSImage?, found answer: Any?, quietly: Bool, otherwise: Tab?, spaceRequest: UUID? = nil) {
+    private func lifted(_ tab: Tab, shot: NSImage?, alone: NSImage?, found answer: Any?, quietly: Bool, otherwise: Tab?, spaceRequest: UUID? = nil) {
         guard let found = answer as? [String: Any], found["floating"] as? Bool == true else {
             if let otherwise { return lift(otherwise, quietly: quietly, spaceRequest: spaceRequest) }
             if let spaceRequest { _ = spaceFloat.finish(spaceRequest) }
@@ -5921,10 +6010,10 @@ final class Browser: NSObject, ObservableObject {
         floating = tab.id
         tab.floating = true
         ownFloater()
-        let still = shot.flatMap { shot in
+        let still = alone.flatMap { alone in
             Float.still(
-                of: shot,
-                picture: (found["picture"] as? [NSNumber] ?? []).map(\.doubleValue),
+                of: alone,
+                picture: (found["alone"] as? [NSNumber] ?? []).map(\.doubleValue),
                 page: (found["page"] as? [NSNumber] ?? []).map(\.doubleValue)
             )
         }
@@ -6023,7 +6112,7 @@ final class Browser: NSObject, ObservableObject {
         // The middle button on a link opens it beside the tab you are on, as
         // it does in every other browser (see MiddleRelay).
         // From a private tab, the new one is private too, as for ⌘-click.
-        tab.onMiddleClick = { [weak self] tab, url in self?.openClicked(url, foreground: false, from: tab, view: tab.built) }
+        tab.onMiddleClick = { [weak self] tab, url, front in self?.openClicked(url, foreground: front, from: tab, view: tab.built) }
         tab.onCross = { [weak self] tab, url in self?.replace(tab, going: url) }
         tab.onFileLink = { [weak self] tab, url, blank in
             if blank { self?.open(url, foreground: true, from: tab) } else { tab.go(to: url) }
@@ -7267,6 +7356,15 @@ extension Browser: WKNavigationDelegate, WKUIDelegate {
         let beside = (webView as? PageView)?.takeBeside() == true
         let popup = windowFeatures.width != nil || windowFeatures.height != nil
             || windowFeatures.toolbarsVisibility?.boolValue == false
+        // A link clicked open in a new tab, to a site Settings sends to
+        // another space: there instead, without its opener, which is in
+        // another space's store anyway (see SpaceRoutes.swift). A window
+        // the page opens from a script, or sizes, keeps its opener here.
+        if clicked, !beside, !popup, action.navigationType == .linkActivated,
+           (action.request.httpMethod ?? "GET").uppercased() == "GET",
+           let url = action.request.url, sendToSpace(url, from: opener) {
+            return nil
+        }
         // WebKit's copy of the opener's configuration still holds the
         // opener's user content controller — its scripts and its message
         // handlers. Shared, the new tab claimed the opener's handlers as its
@@ -7392,6 +7490,8 @@ extension Browser: WKNavigationDelegate, WKUIDelegate {
             }
             return
         }
+        // To a site Settings sends to another space: there, in front.
+        if sendToSpace(url, from: source) { return }
         open(url, foreground: foreground, from: source, mayWait: true, link: true)
     }
 
@@ -8106,6 +8206,7 @@ extension Browser: WKDownloadDelegate {
         guard let data, let file = whereToSave(suggestedFilename ?? "") else { return }
         do {
             try data.write(to: file)
+            Browser.markDownloaded(file)
             // A private page's file is named once and listed nowhere, as in
             // `downloadDidFinish`: the list is written to disk and outlives it.
             if webView.configuration.websiteDataStore.isPersistent, anyTab(for: webView)?.shy != true {
@@ -8168,6 +8269,20 @@ extension Browser: WKDownloadDelegate {
     private static func fileName(_ name: String) -> String {
         let last = (name as NSString).lastPathComponent
         return ["", ".", "..", "/"].contains(last) ? "download" : last
+    }
+
+    /// A file written here from a page — the PDF bar's download, Save Page
+    /// As… — marked as downloaded, as WebKit marks a download's: macOS checks
+    /// it when it is first opened, as any other. No address goes with it, so
+    /// a private page's says no more than an ordinary one's.
+    nonisolated static func markDownloaded(_ file: URL) {
+        var values = URLResourceValues()
+        values.quarantineProperties = [
+            kLSQuarantineAgentNameKey as String: "Search",
+            kLSQuarantineTypeKey as String: kLSQuarantineTypeWebDownload as String,
+        ]
+        var file = file
+        try? file.setResourceValues(values)
     }
 
     private func saved(_ file: URL, from source: URL?, keepsAddress: Bool = true) {

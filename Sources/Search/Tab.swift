@@ -618,7 +618,9 @@ final class Tab: ObservableObject, Identifiable {
     var onStoreAdd: ((Tab) -> Void)?
     /// The middle button was let go over a link. The browser opens it in a
     /// tab of its own beside this one, without leaving the page you are on.
-    var onMiddleClick: ((Tab, URL) -> Void)?
+    /// ⌘-click on a link the page would have kept for itself: the same,
+    /// in front when ⇧ was held too (see MiddleRelay).
+    var onMiddleClick: ((Tab, URL, Bool) -> Void)?
     /// A page on this Mac's link to another file, clicked: here, or in a
     /// tab of its own for target="_blank" (see MiddleRelay).
     var onFileLink: ((Tab, URL, Bool) -> Void)?
@@ -1322,40 +1324,35 @@ final class Tab: ObservableObject, Identifiable {
     /// it is still that scheme and host: a document that changed after the
     /// last check on this side gets nothing.
     func fill(user: String, password: String, onlyOn page: URL? = nil, done: ((Bool) -> Void)? = nil) {
-        guard let still = stillOn(page) else { done?(false); return }
-        web.evaluateInSearch(
-            "\(still)window.__officeForms && window.__officeForms.fill(`\(escape(user))`, `\(escape(password))`)"
-        ) { result in
-            done?((result as? Bool) ?? false)
-        }
+        callForms("fill(user, password)", ["user": user, "password": password], onlyOn: page, done: done)
     }
 
     /// A verification code, into the box it was offered under, on that page
     /// alone (see `fill`).
     func fillCode(_ code: String, onlyOn page: URL, done: ((Bool) -> Void)? = nil) {
-        guard let still = stillOn(page) else { done?(false); return }
-        web.evaluateInSearch(
-            "\(still)window.__officeForms && window.__officeForms.code(`\(escape(code))`)"
-        ) { result in
-            done?((result as? Bool) ?? false)
-        }
-    }
-
-    /// The page's own check that it is still that scheme and host: "" for no
-    /// page to check, nil for a page that can't be checked.
-    private func stillOn(_ page: URL?) -> String? {
-        guard let page else { return "" }
-        guard let scheme = page.scheme?.lowercased(), let host = page.host()?.lowercased() else { return nil }
-        return "location.protocol === `\(escape(scheme)):` && location.hostname.toLowerCase() === `\(escape(host))` && "
+        callForms("code(code)", ["code": code], onlyOn: page, done: done)
     }
 
     /// A first step's name alone, picked from the accounts under its box.
     func fillName(_ user: String, done: ((Bool) -> Void)? = nil) {
-        web.evaluateInSearch(
-            "window.__officeForms && window.__officeForms.name(`\(escape(user))`)"
-        ) { result in
-            done?((result as? Bool) ?? false)
+        callForms("name(user)", ["user": user], onlyOn: nil, done: done)
+    }
+
+    /// One of the page script's calls, its values handed over as arguments,
+    /// never written into the source. With a page, the script first checks
+    /// it is still that scheme and host; a page that can't be checked gets
+    /// nothing.
+    private func callForms(_ call: String, _ values: [String: Any], onlyOn page: URL?, done: ((Bool) -> Void)?) {
+        var arguments = values.merging(["scheme": "", "host": ""]) { own, _ in own }
+        if let page {
+            guard let scheme = page.scheme?.lowercased(), let host = page.host()?.lowercased() else { done?(false); return }
+            arguments["scheme"] = scheme + ":"
+            arguments["host"] = host
         }
+        web.callInSearch("""
+            if (scheme && (location.protocol !== scheme || location.hostname.toLowerCase() !== host)) return false;
+            return !!(window.__officeForms && window.__officeForms.\(call));
+            """, arguments: arguments) { done?(($0 as? Bool) ?? false) }
     }
 
     func picked(selector: String, label: String, note: String) {
@@ -2134,6 +2131,24 @@ final class MiddleRelay: NSObject, WKScriptMessageHandler {
           if (!e.defaultPrevented) window.webkit.messageHandlers.officeMiddle.postMessage({ href: href });
         }, 0);
       }, true);
+      // ⌘-click on a link: a tab of its own, whatever the page does with
+      // the click. Some shops (Zara Home's grid, for one) take every click
+      // on a product for their own router and never look at ⌘, so the page
+      // went where you were. Taken here, on the way down, before them —
+      // only a link to the web that leaves this page: a link to "#" is a
+      // button in disguise, and keeps doing what the page makes it do.
+      // ⇧ as well brings the new tab to the front, as in every browser.
+      window.addEventListener('click', function (e) {
+        if (e.button !== 0 || !e.isTrusted || !e.metaKey || e.ctrlKey || e.altKey) return;
+        var a = anchor(e);
+        if (!a || a.hasAttribute('download')) return;
+        var href = link(e);
+        if (!/^https?:/i.test(href)) return;
+        if (href.split('#')[0] === location.href.split('#')[0]) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        window.webkit.messageHandlers.officeMiddle.postMessage({ href: href, front: e.shiftKey });
+      }, true);
       // A page on this Mac linking to another file. WebKit lets a file page
       // read only its own folder, and drops a click on a link out of it
       // before Search is asked: the page stayed where it was, and only the
@@ -2208,9 +2223,10 @@ final class MiddleRelay: NSObject, WKScriptMessageHandler {
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https"
         else { return }
+        let front = body["front"] as? Bool ?? false
         MainActor.assumeIsolated { [weak self] in
             guard let self, let tab else { return }
-            tab.onMiddleClick?(tab, url)
+            tab.onMiddleClick?(tab, url, front)
         }
     }
 }
@@ -3220,6 +3236,14 @@ extension WKWebView {
     /// or nil for none or an error.
     func evaluateInSearch(_ js: String, then: ((Any?) -> Void)? = nil) {
         evaluateJavaScript(js, in: nil, in: Web.world) { result in
+            then?(try? result.get())
+        }
+    }
+
+    /// As `evaluateInSearch`, for a function body: `arguments` arrive as
+    /// its named parameters, so what they hold is never part of the source.
+    func callInSearch(_ body: String, arguments: [String: Any], then: ((Any?) -> Void)? = nil) {
+        callAsyncJavaScript(body, arguments: arguments, in: nil, in: Web.world) { result in
             then?(try? result.get())
         }
     }

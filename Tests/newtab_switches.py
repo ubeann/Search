@@ -3,7 +3,7 @@
 switch to: the last six looked at before anything is typed, then the recent
 places, and up to two that match
 once something is, best match first, in the room of History's places so the
-list is no longer. A row says "Open tab", and "↩ Switch" once picked: Return
+list is no longer. A row says "Switch to tab", and "↩ Switch" once picked: Return
 still opens what was typed unless a tab is picked; ↓ then Return switches;
 ⌘Return opens a copy behind. An open page's address typed or pasted whole,
 tracking tags and all, is picked already. The same in a blank tab's own field
@@ -111,7 +111,7 @@ def main():
         s = state()
         k = kinds(s)
         t.ok("two open tabs first, then the places", k[:2] == ["open", "open"], k)
-        t.ok("an unpicked open tab says Open tab, no key cap", s["notes"][:2] == ["Open tab", "Open tab"], s["notes"])
+        t.ok("an unpicked open tab says Switch to tab, no key cap", s["notes"][:2] == ["Switch to tab", "Switch to tab"], s["notes"])
         places = [x for x in k if x in ("visited", "bookmark", "known")]
         t.ok("the list is no longer: open tabs and places three at most", k.count("open") + len(places) <= 3, k)
         t.ok("a page open and visited is one row, the open one",
