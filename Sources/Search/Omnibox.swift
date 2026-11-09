@@ -150,8 +150,6 @@ struct Omnibox: View {
                 Row(offer: offer, picked: browser.picked == index, note: browser.rowNote(index))
                     .contentShape(Rectangle())
                     .onTapGesture { browser.take(offer) }
-                    // The list's own inset, between the open tabs and the rest.
-                    .padding(.top, browser.startsGroup(index) ? 6 : 0)
             }
             if let note = browser.switcherNote {
                 Text(note)
@@ -178,7 +176,7 @@ struct Omnibox: View {
         /// Where the arrow keys have walked to. The pointer gets its own,
         /// quieter mark, and changes nothing but the look of the row.
         let picked: Bool
-        /// What the row says at its end (Browser.rowNote): "Switch to tab", or
+        /// What the row says at its end (Browser.rowNote): "Open tab", or
         /// "↩ Switch" on a key cap once picked, when Return goes to it.
         var note: (text: String, key: Bool)? = nil
 
@@ -245,7 +243,7 @@ struct Omnibox: View {
                                 RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(Palette.hairline, lineWidth: 1)
                             }
                         }
-                        .accessibilityLabel(note.key ? "Return switches to this tab" : "Switch to tab")
+                        .accessibilityLabel(note.key ? "Return switches to this tab" : "Open tab")
                 }
                 if offer.kind == .bookmark {
                     // Kept by you, not only visited: the bookmark's mark,

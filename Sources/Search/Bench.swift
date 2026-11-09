@@ -1461,7 +1461,7 @@ final class Bench {
                     "note": browser.switcherNote ?? "",
                     // The row the arrow keys are on, or -1.
                     "picked": browser.picked ?? -1,
-                    // What each row says at its end ("Switch to tab", "↩ Switch").
+                    // What each row says at its end ("Open tab", "↩ Switch").
                     "notes": browser.offers.indices.map { browser.rowNote($0)?.text ?? "" },
                     "asked": browser.suggester.asked, "cancelled": browser.suggester.cancelled,
                     "tooSlow": browser.suggester.tooSlow,

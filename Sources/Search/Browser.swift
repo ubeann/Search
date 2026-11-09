@@ -434,19 +434,12 @@ final class Browser: NSObject, ObservableObject {
     }
 
     /// What a row says at its end. In a field that lists open tabs among
-    /// other rows, an open tab's row says Switch to tab, as a click on it
-    /// does, and ↩ Switch once it is picked: only then does Return go to it
-    /// (see submit).
+    /// other rows, an open tab's row says so, Open tab, and ↩ Switch on a
+    /// key cap once it is picked: only then does Return go to it (see
+    /// submit). A click on it switches either way.
     func rowNote(_ index: Int) -> (text: String, key: Bool)? {
         guard fieldSwitches, offers.indices.contains(index), offers[index].tab != nil else { return nil }
-        return picked == index ? ("↩ Switch", true) : ("Switch to tab", false)
-    }
-
-    /// The first row after the open tabs in such a field, set a little apart
-    /// so the tabs to switch to and the places to open read as two groups.
-    func startsGroup(_ index: Int) -> Bool {
-        guard fieldSwitches, index > 0, offers.indices.contains(index) else { return false }
-        return offers[index - 1].tab != nil && offers[index].tab == nil
+        return picked == index ? ("↩ Switch", true) : ("Open tab", false)
     }
 
     /// What Return in the field will do, which the field says with its
